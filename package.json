@@ -1,0 +1,42 @@
+{
+  "name": "milkman",
+  "version": "1.0.0",
+  "description": "Milk Delivery & Tracking Platform - Full Stack Application",
+  "main": "index.js",
+  "scripts": {
+    "install:frontend": "cd frontend && npm install",
+    "install:backend": "cd backend && npm install",
+    "install:all": "npm run install:frontend && npm run install:backend",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && npm run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && npm run build",
+    "build": "npm run build:backend && npm run build:frontend",
+    "start": "cd backend && npm start",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourusername/milkman.git"
+  },
+  "keywords": [
+    "milk",
+    "tracking",
+    "delivery",
+    "billing",
+    "nextjs",
+    "nodejs",
+    "mongodb",
+    "express"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/yourusername/milkman/issues"
+  },
+  "homepage": "https://github.com/yourusername/milkman#readme",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
