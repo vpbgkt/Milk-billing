@@ -1,27 +1,92 @@
 const express = require('express');
 const router = express.Router();
-const { protect, restrictTo } = require('../middleware/auth');
+const { protect, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const MilkEntry = require('../models/MilkEntry');
+const PlatformSettings = require('../models/PlatformSettings');
 
 // @desc    Get platform analytics
 // @route   GET /api/superadmin/analytics
 // @access  Private (SuperAdmin only)
-router.get('/analytics', protect, restrictTo('superadmin'), async (req, res) => {
+router.get('/analytics', protect, authorize('superadmin'), async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({ role: 'user' });
     const totalSuppliers = await User.countDocuments({ role: 'supplier' });
     const activeUsers = await User.countDocuments({ role: 'user', isActive: true });
     const suspendedUsers = await User.countDocuments({ isSuspended: true });
-    
-    const totalMilkEntries = await MilkEntry.countDocuments();
+      const totalMilkEntries = await MilkEntry.countDocuments();
     const thisMonthEntries = await MilkEntry.countDocuments({
       createdAt: {
         $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
       }
     });
 
+    // Calculate total revenue from confirmed entries
+    const revenueData = await MilkEntry.aggregate([
+      { $match: { status: 'confirmed' } },
+      { $group: { _id: null, totalRevenue: { $sum: '$totalAmount' } } }
+    ]);
+    const totalRevenue = revenueData[0]?.totalRevenue || 0;
+
+    // Calculate monthly growth (comparing with previous month)
+    const lastMonth = new Date();
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    const lastMonthStart = new Date(lastMonth.getFullYear(), lastMonth.getMonth(), 1);
+    const lastMonthEnd = new Date(lastMonth.getFullYear(), lastMonth.getMonth() + 1, 0);
+
+    const lastMonthUsers = await User.countDocuments({
+      role: 'user',
+      createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
+    });
+    const thisMonthUsers = await User.countDocuments({
+      role: 'user',
+      createdAt: { $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }
+    });
+
+    const lastMonthSuppliers = await User.countDocuments({
+      role: 'supplier',
+      createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
+    });
+    const thisMonthSuppliers = await User.countDocuments({
+      role: 'supplier',
+      createdAt: { $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }
+    });
+
+    const lastMonthRevenue = await MilkEntry.aggregate([
+      { 
+        $match: { 
+          status: 'confirmed',
+          createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
+        } 
+      },
+      { $group: { _id: null, totalRevenue: { $sum: '$totalAmount' } } }
+    ]);
+    const thisMonthRevenue = await MilkEntry.aggregate([
+      { 
+        $match: { 
+          status: 'confirmed',
+          createdAt: { $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }
+        } 
+      },
+      { $group: { _id: null, totalRevenue: { $sum: '$totalAmount' } } }
+    ]);
+
+    // Get recent activities
+    const recentActivities = await getRecentActivities();
+
     const platformStats = {
+      totalUsers,
+      totalSuppliers,
+      totalMilkEntries,
+      totalRevenue,
+      monthlyGrowth: {
+        users: lastMonthUsers > 0 ? ((thisMonthUsers - lastMonthUsers) / lastMonthUsers * 100) : 0,
+        suppliers: lastMonthSuppliers > 0 ? ((thisMonthSuppliers - lastMonthSuppliers) / lastMonthSuppliers * 100) : 0,
+        revenue: (lastMonthRevenue[0]?.totalRevenue || 0) > 0 ? 
+          (((thisMonthRevenue[0]?.totalRevenue || 0) - (lastMonthRevenue[0]?.totalRevenue || 0)) / (lastMonthRevenue[0]?.totalRevenue || 0) * 100) : 0
+      },
+      recentActivities,
+      // Keep legacy structure for backward compatibility
       users: {
         total: totalUsers,
         active: activeUsers,
@@ -33,8 +98,7 @@ router.get('/analytics', protect, restrictTo('superadmin'), async (req, res) => 
       milkEntries: {
         total: totalMilkEntries,
         thisMonth: thisMonthEntries
-      },
-      registrationTrend: await getRegistrationTrend()
+      }
     };
 
     res.status(200).json({
@@ -53,7 +117,7 @@ router.get('/analytics', protect, restrictTo('superadmin'), async (req, res) => 
 // @desc    Get all suppliers with their stats
 // @route   GET /api/superadmin/suppliers
 // @access  Private (SuperAdmin only)
-router.get('/suppliers', protect, restrictTo('superadmin'), async (req, res) => {
+router.get('/suppliers', protect, authorize('superadmin'), async (req, res) => {
   try {
     const suppliers = await User.find({ role: 'supplier' })
       .populate('connectedUsers')
@@ -93,7 +157,7 @@ router.get('/suppliers', protect, restrictTo('superadmin'), async (req, res) => 
 // @desc    Get all users across platform
 // @route   GET /api/superadmin/users
 // @access  Private (SuperAdmin only)
-router.get('/users', protect, restrictTo('superadmin'), async (req, res) => {
+router.get('/users', protect, authorize('superadmin'), async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -136,7 +200,7 @@ router.get('/users', protect, restrictTo('superadmin'), async (req, res) => {
 // @desc    Suspend/Unsuspend user or supplier
 // @route   PUT /api/superadmin/users/:id/suspend
 // @access  Private (SuperAdmin only)
-router.put('/users/:id/suspend', protect, restrictTo('superadmin'), async (req, res) => {
+router.put('/users/:id/suspend', protect, authorize('superadmin'), async (req, res) => {
   try {
     const { suspend, reason } = req.body;
     
@@ -175,7 +239,7 @@ router.put('/users/:id/suspend', protect, restrictTo('superadmin'), async (req, 
 // @desc    Delete user or supplier
 // @route   DELETE /api/superadmin/users/:id
 // @access  Private (SuperAdmin only)
-router.delete('/users/:id', protect, restrictTo('superadmin'), async (req, res) => {
+router.delete('/users/:id', protect, authorize('superadmin'), async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
     if (!user) {
@@ -217,12 +281,10 @@ router.delete('/users/:id', protect, restrictTo('superadmin'), async (req, res) 
 // @desc    Create new supplier
 // @route   POST /api/superadmin/suppliers
 // @access  Private (SuperAdmin only)
-router.post('/suppliers', protect, restrictTo('superadmin'), async (req, res) => {
+router.post('/suppliers', protect, authorize('superadmin'), async (req, res) => {
   try {
-    const { name, email, password, businessName, phone, address, commission } = req.body;
-
-    // Check if user already exists
-    const existingUser = await User.findByEmail(email);
+    const { name, email, password, businessName, phone, address, commission } = req.body;    // Check if user already exists
+    const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -266,7 +328,7 @@ router.post('/suppliers', protect, restrictTo('superadmin'), async (req, res) =>
 // @desc    Update platform settings
 // @route   PUT /api/superadmin/settings
 // @access  Private (SuperAdmin only)
-router.put('/settings', protect, restrictTo('superadmin'), async (req, res) => {
+router.put('/settings', protect, authorize('superadmin'), async (req, res) => {
   try {
     // This would typically update a settings collection
     // For now, we'll return a success message
@@ -296,6 +358,65 @@ router.put('/settings', protect, restrictTo('superadmin'), async (req, res) => {
     });
   }
 });
+
+// Helper function to get recent activities
+async function getRecentActivities() {
+  const recentUsers = await User.find({ role: 'user' })
+    .sort({ createdAt: -1 })
+    .limit(5)
+    .select('name email createdAt');
+  
+  const recentSuppliers = await User.find({ role: 'supplier' })
+    .sort({ createdAt: -1 })
+    .limit(3)
+    .select('name businessName createdAt');
+  
+  const recentEntries = await MilkEntry.find()
+    .populate('userId', 'name')
+    .populate('supplierId', 'name businessName')
+    .sort({ createdAt: -1 })
+    .limit(10);
+
+  const activities = [];
+
+  // Add user registrations
+  recentUsers.forEach(user => {
+    activities.push({
+      _id: `user-${user._id}`,
+      type: 'user_registration',
+      description: `New user ${user.name} registered`,
+      user: user._id,
+      createdAt: user.createdAt
+    });
+  });
+
+  // Add supplier registrations
+  recentSuppliers.forEach(supplier => {
+    activities.push({
+      _id: `supplier-${supplier._id}`,
+      type: 'supplier_registration',
+      description: `New supplier ${supplier.businessName || supplier.name} registered`,
+      user: supplier._id,
+      createdAt: supplier.createdAt
+    });
+  });
+
+  // Add milk deliveries
+  recentEntries.forEach(entry => {
+    activities.push({
+      _id: `entry-${entry._id}`,
+      type: 'milk_delivery',
+      description: `${entry.userId?.name || 'User'} recorded ${entry.quantity}L milk delivery`,
+      user: entry.userId?._id,
+      createdAt: entry.createdAt
+    });
+  });
+
+  // Sort by date and return top 20
+  return activities
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .slice(0, 20);
+}
 
 // Helper function to get registration trend
 async function getRegistrationTrend() {
